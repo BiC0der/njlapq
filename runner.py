@@ -287,14 +287,25 @@ class GetVoidsEngine:
                 if resp.status_code == 200:
                     try:
                         res_json = resp.json()
-                        if res_json.get("available") is True or res_json.get("status") == "ok":
+                        err_type = res_json.get("error_type", "")
+                        
+                        # 1. Banned / Fully Available account -> Voids.txt (Real Void)
+                        if res_json.get("available") is True:
                             with self.lock:
                                 self.void_count += 1
                                 with open(self.output_file, "a", encoding="utf-8") as f:
                                     f.write(f"{username}\n")
+                            self.session_ref.send_queue.put(f"[+] Void : @{username}")
+                            
+                        # 2. Active / Taken by active account -> voids_Live.txt (Void Live)
+                        elif err_type == "username_held_by_others":
+                            with self.lock:
                                 with open(os.path.join(SCRIPT_DIR, "voids_Live.txt"), "a", encoding="utf-8") as f:
                                     f.write(f"{username}\n")
-                            self.session_ref.send_queue.put(f"[+] Void : @{username}")
+                                    
+                        elif "Please wait" in resp.text or err_type == "rate_limit":
+                            with self.lock:
+                                self.ratelimit_count += 1
                     except Exception:
                         pass
                 elif resp.status_code == 429 or "Please wait" in resp.text:
@@ -303,6 +314,8 @@ class GetVoidsEngine:
                 else:
                     with self.lock:
                         self.error_count += 1
+
+
             except Exception:
                 with self.lock:
                     self.error_count += 1
