@@ -375,15 +375,10 @@ class GetVoidsSession:
             if not os.path.exists(exe_path):
                 exe_path = os.path.join(script_dir, "GetVoids")
 
-            bot.send_message(self.chat_id, f"Starting {TOOL_NAME}...", reply_markup=get_main_keyboard())
-            
-            # If GetVoids.exe binary exists, attempt subprocess (without new window), otherwise run native python engine
-            if os.path.exists(exe_path):
+            # On Windows, if GetVoids.exe exists, run subprocess hidden. On Linux, run native Python engine directly (no Wine needed).
+            if IS_WINDOWS and os.path.exists(exe_path):
                 env = os.environ.copy()
                 env["PYTHONUNBUFFERED"] = "1"
-                env["WINEDEBUG"] = "-all"
-                if not IS_WINDOWS:
-                    env.pop("VIRTUAL_ENV", None)
 
                 popen_kwargs = {
                     "stdin": subprocess.PIPE,
@@ -393,24 +388,18 @@ class GetVoidsSession:
                     "bufsize": 0,
                     "universal_newlines": True,
                     "cwd": SCRIPT_DIR,
-                    "env": env
+                    "env": env,
+                    "creationflags": 0x08000000  # CREATE_NO_WINDOW
                 }
-                
-                if IS_WINDOWS:
-                    # CREATE_NO_WINDOW = 0x08000000 (run hidden in background, NO console window opens)
-                    popen_kwargs["creationflags"] = 0x08000000
 
                 try:
-                    if not IS_WINDOWS and shutil.which("wine"):
-                        wine_cmd = ["wine", exe_path]
-                        if shutil.which("xvfb-run"):
-                            wine_cmd = ["xvfb-run", "-a"] + wine_cmd
-                        self.proc = subprocess.Popen(wine_cmd, **popen_kwargs)
-                    else:
-                        self.proc = subprocess.Popen([exe_path], **popen_kwargs)
+                    self.proc = subprocess.Popen([exe_path], **popen_kwargs)
                 except Exception as e:
                     print(f"Subprocess start warning: {e}, falling back to native Python engine.")
                     self.proc = None
+            else:
+                self.proc = None
+
 
             self.state = "STARTING"
             self.stop_sender = False
