@@ -1,0 +1,24 @@
+# Configuration for GetVoids Telegram Bot Runner
+# Replace the values below with your actual details.
+
+# Telegram Bot Token from @BotFather
+BOT_TOKEN=8866609784:AAHqqrQsFgvKIp6dg0suXnlXGhJfcsj599I
+
+# Telegram User/Member IDs (comma-separated integers) that are allowed to control the bot.
+# You can get your ID from @userinfobot
+MEMBER_IDS=1443655356
+
+# Name of the tool displayed in Telegram starting message
+TOOL_NAME=C-ram void hunter
+
+# Output file to send when stopped
+OUTPUT_FILE=Voids.txt
+
+# Discord Webhook URL for sending live counters
+DISCORD_WEBHOOK=https://discord.com/api/webhooks/1532812838924587289/lWe-NGVdCanYmI8Hth0xbcwUEY3PSYO7QaTvqCqMM0RMtyjKfjN-P5Ho4S4SwEC80eWn
+
+# Optional Discord Proxy (e.g. http://127.0.0.1:1080 or leave empty for direct connection)
+DISCORD_PROXY=
+
+
+

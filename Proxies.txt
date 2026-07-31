@@ -1,0 +1,14 @@
+https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt
+https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt
+https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt
+https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt
+https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt
+https://raw.githubusercontent.com/clket/proxy-list/master/https.txt
+https://raw.githubusercontent.com/clket/proxy-list/master/http.txt
+https://raw.githubusercontent.com/themiralay/Proxy-List-World/refs/heads/master/data.txt 
+https://raw.githubusercontent.com/claude89757/free_https_proxies/refs/heads/main/https_proxies.txt 
+https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/http.txt 
+https://raw.githubusercontent.com/variableninja/proxyscraper/refs/heads/main/proxies/http.txt 
+https://raw.githubusercontent.com/saisuiu/Lionkings-Http-Proxys-Proxies/refs/heads/main/free.txt
+https://raw.githubusercontent.com/variableninja/proxyscraper/refs/heads/main/proxies/http.txt
+https://raw.githubusercontent.com/saisuiu/Lionkings-Http-Proxys-Proxies/refs/heads/main/free.txt
