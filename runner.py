@@ -232,7 +232,7 @@ class GetVoidsSession:
                 return
                 
             bot.send_message(self.chat_id, f"Starting {TOOL_NAME}...", reply_markup=get_main_keyboard())
-                        # Start process with environment variables to disable stdout buffering & Wine debug noise
+            # Start process with working directory and environment variables
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             env["WINEDEBUG"] = "-all"
@@ -244,8 +244,10 @@ class GetVoidsSession:
                 "text": True,
                 "bufsize": 0,
                 "universal_newlines": True,
+                "cwd": SCRIPT_DIR,
                 "env": env
             }
+
             
             if IS_WINDOWS and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
                 popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
@@ -467,8 +469,14 @@ class GetVoidsSession:
             if self.proc is not None:
                 ret = self.proc.poll()
                 self.send_output_file()
-                bot.send_message(self.chat_id, f"{TOOL_NAME} finished with exit code {ret}.", reply_markup=get_main_keyboard())
+                msg = f"{TOOL_NAME} finished with exit code {ret}."
+                if ret != 0 and buf:
+                    clean_buf = ansi_escape.sub('', buf).strip()
+                    if clean_buf:
+                        msg += f"\nDetails:\n`{clean_buf[:1000]}`"
+                bot.send_message(self.chat_id, msg, reply_markup=get_main_keyboard(), parse_mode="Markdown")
                 self._cleanup()
+
 
     def send_discord_counter(self, title):
         global DISCORD_WEBHOOK, DISCORD_PROXY
