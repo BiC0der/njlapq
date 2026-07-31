@@ -3,12 +3,14 @@ import re
 import sys
 import time
 import queue
+import random
 import subprocess
 import threading
 import shutil
 import telebot
 from telebot import types
 import requests
+
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -190,12 +192,158 @@ def get_back_keyboard():
     return markup
 
 # ----------------------------------------------------
+# 2. Native GetVoids Engine
+# ----------------------------------------------------
+class GetVoidsEngine:
+    def __init__(self, length, threads_count, output_file, proxies_file, session_ref):
+        self.length = length
+        self.threads_count = threads_count
+        self.output_file = os.path.join(SCRIPT_DIR, output_file)
+        self.proxies_file = os.path.join(SCRIPT_DIR, proxies_file)
+        self.session_ref = session_ref
+        
+        self.running = False
+        self.threads = []
+        self.lock = threading.Lock()
+        
+        self.req_count = 0
+        self.void_count = 0
+        self.ratelimit_count = 0
+        self.error_count = 0
+        
+        self.proxies = []
+        self.proxy_index = 0
+        self.chars = "abcdefghijklmnopqrstuvwxyz0123456789_."
+        self.last_req_count = 0
+        self.last_rps_time = time.time()
+        self.rps = 0
+
+    def load_proxies(self):
+        self.proxies = []
+        if not os.path.exists(self.proxies_file):
+            return 0
+            
+        with open(self.proxies_file, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+            
+        for line in lines:
+            if line.startswith("#"):
+                continue
+            if line.startswith("http://") or line.startswith("https://"):
+                try:
+                    res = requests.get(line, timeout=10)
+                    if res.status_code == 200:
+                        fetched = [p.strip() for p in res.text.splitlines() if p.strip()]
+                        self.proxies.extend(fetched)
+                except Exception:
+                    pass
+            else:
+                self.proxies.append(line)
+                
+        return len(self.proxies)
+
+    def get_next_proxy(self):
+        if not self.proxies:
+            return None
+        with self.lock:
+            proxy = self.proxies[self.proxy_index % len(self.proxies)]
+            self.proxy_index += 1
+            return proxy
+
+    def generate_username(self):
+        return "".join(random.choices(self.chars, k=self.length))
+
+    def worker(self):
+        session = requests.Session()
+        headers = {
+            "User-Agent": "Instagram 367.0.0.43.91 Android (31/12; 440dpi; 1080x2179; Xiaomi/POCO; M2102J20SG; vayu; qcom; en_US; 696010993)",
+            "x-ig-app-id": "58585258191",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+        }
+        
+        while self.running:
+            username = self.generate_username()
+            proxy = self.get_next_proxy()
+            
+            proxies_dict = None
+            if proxy:
+                if not proxy.startswith("http"):
+                    proxy = f"http://{proxy}"
+                proxies_dict = {"http": proxy, "https": proxy}
+                
+            try:
+                data = {"username": username}
+                resp = session.post(
+                    "https://i.instagram.com/api/v1/users/check_username/",
+                    headers=headers,
+                    data=data,
+                    proxies=proxies_dict,
+                    timeout=8
+                )
+                
+                with self.lock:
+                    self.req_count += 1
+                    
+                if resp.status_code == 200:
+                    try:
+                        res_json = resp.json()
+                        if res_json.get("available") is True or res_json.get("status") == "ok":
+                            with self.lock:
+                                self.void_count += 1
+                                with open(self.output_file, "a", encoding="utf-8") as f:
+                                    f.write(f"{username}\n")
+                                with open(os.path.join(SCRIPT_DIR, "voids_Live.txt"), "a", encoding="utf-8") as f:
+                                    f.write(f"{username}\n")
+                            self.session_ref.send_queue.put(f"[+] Void : @{username}")
+                    except Exception:
+                        pass
+                elif resp.status_code == 429 or "Please wait" in resp.text:
+                    with self.lock:
+                        self.ratelimit_count += 1
+                else:
+                    with self.lock:
+                        self.error_count += 1
+            except Exception:
+                with self.lock:
+                    self.error_count += 1
+                    
+            time.sleep(0.02)
+
+    def get_counter_title(self):
+        now = time.time()
+        elapsed = now - self.last_rps_time
+        if elapsed >= 1.0:
+            req_diff = self.req_count - self.last_req_count
+            self.rps = int(req_diff / elapsed)
+            self.last_req_count = self.req_count
+            self.last_rps_time = now
+            
+        return f"Voids: {self.void_count} | Reqs: {self.req_count} | RPS: {self.rps} | RL: {self.ratelimit_count} | Err: {self.error_count}"
+
+    def start(self):
+        count = self.load_proxies()
+        if count == 0:
+            self.session_ref.send_queue.put("[!] No proxies available. Exiting...")
+            self.running = False
+            return
+        self.running = True
+        for _ in range(self.threads_count):
+            t = threading.Thread(target=self.worker, daemon=True)
+            t.start()
+            self.threads.append(t)
+
+    def stop(self):
+        self.running = False
+
+
+# ----------------------------------------------------
 # 3. Active Session Manager
 # ----------------------------------------------------
 class GetVoidsSession:
     def __init__(self, chat_id):
         self.chat_id = chat_id
         self.proc = None
+        self.engine = None
         self.state = "IDLE"  # "IDLE", "STARTING", "WAITING_FOR_LENGTH", "WAITING_FOR_THREADS", "RUNNING"
         self.reader_thread = None
         self.send_queue = queue.Queue()
@@ -210,7 +358,6 @@ class GetVoidsSession:
         self.last_discord_error_time = 0
         self.log_history = []
 
-        
         # Synchronization Events for inputs
         self.length_event = threading.Event()
         self.length_input = ""
@@ -219,61 +366,52 @@ class GetVoidsSession:
 
     def start(self):
         with self.lock:
-            if self.proc is not None:
+            if self.proc is not None or (self.engine and self.engine.running):
                 bot.send_message(self.chat_id, f"{TOOL_NAME} is already running!")
                 return
             
-            # Setup path to GetVoids.exe
             script_dir = SCRIPT_DIR
             exe_path = os.path.join(script_dir, "GetVoids.exe")
             if not os.path.exists(exe_path):
                 exe_path = os.path.join(script_dir, "GetVoids")
-            
-            if not os.path.exists(exe_path):
-                bot.send_message(self.chat_id, f"Error: GetVoids.exe not found at path: {exe_path}")
-                return
-                
+
             bot.send_message(self.chat_id, f"Starting {TOOL_NAME}...", reply_markup=get_main_keyboard())
-            # Start process with working directory and environment variables
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            env["WINEDEBUG"] = "-all"
-            if not IS_WINDOWS:
-                env.pop("VIRTUAL_ENV", None)
-
             
-            popen_kwargs = {
-                "stdin": subprocess.PIPE,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.STDOUT,
-                "text": True,
-                "bufsize": 0,
-                "universal_newlines": True,
-                "cwd": SCRIPT_DIR,
-                "env": env
-            }
+            # If GetVoids.exe binary exists, attempt subprocess (without new window), otherwise run native python engine
+            if os.path.exists(exe_path):
+                env = os.environ.copy()
+                env["PYTHONUNBUFFERED"] = "1"
+                env["WINEDEBUG"] = "-all"
+                if not IS_WINDOWS:
+                    env.pop("VIRTUAL_ENV", None)
 
-            
-            if IS_WINDOWS and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
-                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
-            
-            try:
-                if not IS_WINDOWS and shutil.which("wine"):
-                    wine_cmd = ["wine", exe_path]
-                    if shutil.which("xvfb-run"):
-                        wine_cmd = ["xvfb-run", "-a"] + wine_cmd
-                    self.proc = subprocess.Popen(wine_cmd, **popen_kwargs)
-                else:
-                    self.proc = subprocess.Popen([exe_path], **popen_kwargs)
-            except Exception as e:
-                bot.send_message(self.chat_id, f"Failed to start: {e}")
-                self.proc = None
-                return
+                popen_kwargs = {
+                    "stdin": subprocess.PIPE,
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.STDOUT,
+                    "text": True,
+                    "bufsize": 0,
+                    "universal_newlines": True,
+                    "cwd": SCRIPT_DIR,
+                    "env": env
+                }
+                
+                if IS_WINDOWS:
+                    # CREATE_NO_WINDOW = 0x08000000 (run hidden in background, NO console window opens)
+                    popen_kwargs["creationflags"] = 0x08000000
 
+                try:
+                    if not IS_WINDOWS and shutil.which("wine"):
+                        wine_cmd = ["wine", exe_path]
+                        if shutil.which("xvfb-run"):
+                            wine_cmd = ["xvfb-run", "-a"] + wine_cmd
+                        self.proc = subprocess.Popen(wine_cmd, **popen_kwargs)
+                    else:
+                        self.proc = subprocess.Popen([exe_path], **popen_kwargs)
+                except Exception as e:
+                    print(f"Subprocess start warning: {e}, falling back to native Python engine.")
+                    self.proc = None
 
-
-
-            
             self.state = "STARTING"
             self.stop_sender = False
             self.sent_file = False
@@ -284,18 +422,15 @@ class GetVoidsSession:
             self.length_event.clear()
             self.threads_event.clear()
 
-            
-            # Wait a moment, then find the console window HWND
-            time.sleep(1.0)
-            self.hwnd = find_console_hwnd("GetVoids.exe")
-            
-            # Start stdout reader thread
-            self.reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
-            self.reader_thread.start()
-            
+            # Start stdout reader thread if subprocess running
+            if self.proc:
+                self.reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
+                self.reader_thread.start()
+
             # Start message batch sender thread
             self.sender_thread = threading.Thread(target=self._batch_sender, daemon=True)
             self.sender_thread.start()
+
 
     def set_length(self, val):
         self.length_input = val
@@ -307,14 +442,17 @@ class GetVoidsSession:
 
     def stop(self):
         with self.lock:
-            if self.proc is None:
+            if self.proc is None and (self.engine is None or not self.engine.running):
                 bot.send_message(self.chat_id, f"{TOOL_NAME} is not running.")
                 return
                 
             bot.send_message(self.chat_id, f"Stopping {TOOL_NAME}...")
             
-            # Terminate process
-            if self.proc.poll() is None:
+            if self.engine:
+                self.engine.stop()
+                self.engine = None
+
+            if self.proc and self.proc.poll() is None:
                 try:
                     if IS_WINDOWS:
                         subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -322,18 +460,15 @@ class GetVoidsSession:
                         self.proc.kill()
                 except Exception as e:
                     print(f"Error terminating process: {e}")
+                self.proc.wait()
 
-            
-            # Wait for it
-            self.proc.wait()
-            
-            # Force unblock thread if it's waiting for events
             self.length_event.set()
             self.threads_event.set()
             
             self.send_output_file()
             self._cleanup()
             bot.send_message(self.chat_id, f"{TOOL_NAME} has been stopped.", reply_markup=get_main_keyboard())
+
 
     def send_output_file(self):
         # Read the OUTPUT_FILE, copy it to List.txt, send it, and delete List.txt
@@ -411,24 +546,38 @@ class GetVoidsSession:
                     self.threads_event.wait()
                     
                     with self.lock:
-                        if self.proc is None or self.proc.poll() is not None:
-                            return
-                        self.proc.stdin.write(self.threads_input + "\n")
-                        self.proc.stdin.flush()
+                        if self.proc is None and self.engine is None:
+                            try:
+                                l_val = int(self.length_input.strip())
+                                t_val = int(self.threads_input.strip())
+                            except Exception:
+                                l_val = 4
+                                t_val = 10
+                            self.engine = GetVoidsEngine(
+                                length=l_val,
+                                threads_count=t_val,
+                                output_file=OUTPUT_FILE,
+                                proxies_file=PROXIES_FILE,
+                                session_ref=self
+                            )
+                            self.engine.start()
+                        elif self.proc:
+                            self.proc.stdin.write(self.threads_input + "\n")
+                            self.proc.stdin.flush()
                     self.threads_event.clear()
                     
                     with self.lock:
                         self.state = "RUNNING"
-                        # Send status message
                         bot.send_message(
                             self.chat_id,
                             f"*{TOOL_NAME}* is now running...\nLive counters are being sent to Discord.",
                             parse_mode="Markdown"
                         )
                         
-                    # Start title monitoring thread for live counters
+                    # Start title/engine monitoring thread for live counters
                     self.monitor_thread = threading.Thread(target=self._monitor_title, daemon=True)
                     self.monitor_thread.start()
+
                         
                 else:
                     # Regular stdout line processing
@@ -568,16 +717,16 @@ class GetVoidsSession:
         MIN_UPDATE_INTERVAL = 1.0  # Fast immediate updates while preventing rate limits
 
         while not self.stop_sender:
-            if not self.hwnd:
-                self.hwnd = find_console_hwnd("GetVoids.exe")
-                if not self.hwnd:
-                    self.hwnd = find_console_hwnd("Voids:")
-
             title = ""
-            if self.hwnd:
-                title = get_window_text(self.hwnd)
-            if not title:
-                title = get_console_title()
+            if self.engine and self.engine.running:
+                title = self.engine.get_counter_title()
+            else:
+                if not self.hwnd and IS_WINDOWS:
+                    self.hwnd = find_console_hwnd("GetVoids.exe")
+                if self.hwnd:
+                    title = get_window_text(self.hwnd)
+                if not title:
+                    title = get_console_title()
 
             title = title.strip()
 
@@ -589,6 +738,7 @@ class GetVoidsSession:
                     self.send_discord_counter(title)
 
             time.sleep(0.5)
+
 
 
     def _batch_sender(self):
