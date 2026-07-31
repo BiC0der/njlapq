@@ -208,6 +208,8 @@ class GetVoidsSession:
         self.hwnd = None
         self.discord_msg_id = None
         self.last_discord_error_time = 0
+        self.log_history = []
+
         
         # Synchronization Events for inputs
         self.length_event = threading.Event()
@@ -236,6 +238,9 @@ class GetVoidsSession:
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             env["WINEDEBUG"] = "-all"
+            if not IS_WINDOWS:
+                env.pop("VIRTUAL_ENV", None)
+
             
             popen_kwargs = {
                 "stdin": subprocess.PIPE,
@@ -275,8 +280,10 @@ class GetVoidsSession:
             self.status_msg = None
             self.hwnd = None
             self.discord_msg_id = None
+            self.log_history = []
             self.length_event.clear()
             self.threads_event.clear()
+
             
             # Wait a moment, then find the console window HWND
             time.sleep(1.0)
@@ -428,10 +435,15 @@ class GetVoidsSession:
                     if char in ('\n', '\r', '\x0c'):
                         line_raw = buf.strip()
                         line_clean = ansi_escape.sub('', line_raw).strip()
+                        if line_clean:
+                            self.log_history.append(line_clean)
+                            if len(self.log_history) > 30:
+                                self.log_history.pop(0)
+                        
                         # Clean up trailing colons or empty characters to avoid ":" spam
                         if line_clean and line_clean != ":":
-                            # Filter out Wine debug / setup messages
-                            if any(x in line_clean for x in ["err:winediag:", "err:ole:", "wine:", "wine32", "fixme:"]):
+                            # Filter out Wine debug / setup messages from normal chat queue
+                            if any(x in line_clean for x in ["err:winediag:", "err:ole:", "fixme:"]):
                                 buf = ""
                                 continue
                             if "Voids:" in line_clean:
@@ -442,8 +454,12 @@ class GetVoidsSession:
                     elif len(buf) > 400:
                         # Prevent infinite buffer if no newlines are printed
                         line_clean = ansi_escape.sub('', buf).strip()
+                        if line_clean:
+                            self.log_history.append(line_clean)
+                            if len(self.log_history) > 30:
+                                self.log_history.pop(0)
                         if line_clean and line_clean != ":":
-                            if any(x in line_clean for x in ["err:winediag:", "err:ole:", "wine:", "wine32", "fixme:"]):
+                            if any(x in line_clean for x in ["err:winediag:", "err:ole:", "fixme:"]):
                                 buf = ""
                                 continue
                             if "Voids:" in line_clean:
@@ -452,8 +468,6 @@ class GetVoidsSession:
                                 self.send_queue.put(line_clean)
                         buf = ""
 
-
-                        
             except Exception as e:
                 print(f"Stdout reader error: {e}")
                 break
@@ -463,6 +477,7 @@ class GetVoidsSession:
             line_clean = ansi_escape.sub('', buf).strip()
             if line_clean and line_clean != ":":
                 self.send_queue.put(line_clean)
+                self.log_history.append(line_clean)
                 
         # Exit handling
         with self.lock:
@@ -470,12 +485,13 @@ class GetVoidsSession:
                 ret = self.proc.poll()
                 self.send_output_file()
                 msg = f"{TOOL_NAME} finished with exit code {ret}."
-                if ret != 0 and buf:
-                    clean_buf = ansi_escape.sub('', buf).strip()
-                    if clean_buf:
-                        msg += f"\nDetails:\n`{clean_buf[:1000]}`"
+                if ret != 0 and self.log_history:
+                    recent_logs = "\n".join(self.log_history[-10:])
+                    if recent_logs:
+                        msg += f"\n\n*Error Log:*```\n{recent_logs[:1200]}\n```"
                 bot.send_message(self.chat_id, msg, reply_markup=get_main_keyboard(), parse_mode="Markdown")
                 self._cleanup()
+
 
 
     def send_discord_counter(self, title):
