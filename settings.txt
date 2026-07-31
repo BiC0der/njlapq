@@ -20,5 +20,9 @@ DISCORD_WEBHOOK=https://discord.com/api/webhooks/1532812838924587289/lWe-NGVdCan
 # Optional Discord Proxy (e.g. http://127.0.0.1:1080 or leave empty for direct connection)
 DISCORD_PROXY=
 
+# Optional Target Command to run (e.g. python3 GetVoids.py or leave blank to auto-detect)
+TARGET_CMD=
+
+
 
 

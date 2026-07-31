@@ -5,12 +5,21 @@ import time
 import queue
 import subprocess
 import threading
-import ctypes
-from ctypes import wintypes
 import shutil
 import telebot
 from telebot import types
 import requests
+
+IS_WINDOWS = sys.platform == "win32"
+
+try:
+    import ctypes
+    from ctypes import wintypes
+except Exception:
+    ctypes = None
+    wintypes = None
+
+
 
 # ----------------------------------------------------
 # 1. Configuration & Settings Loader
@@ -71,6 +80,11 @@ def load_settings():
             f.write("DISCORD_PROXY=\n")
             settings["DISCORD_PROXY"] = ""
             updated = True
+        if "TARGET_CMD" not in settings:
+            f.write("\n# Optional Target Command (e.g. python3 GetVoids.py or leave blank to auto-detect)\n")
+            f.write("TARGET_CMD=\n")
+            settings["TARGET_CMD"] = ""
+            updated = True
             
     if updated:
         print("Updated settings.txt with default values for missing configuration keys.")
@@ -84,7 +98,9 @@ TOOL_NAME = settings.get("TOOL_NAME", "C-ram void hunter")
 OUTPUT_FILE = settings.get("OUTPUT_FILE", "14day.txt")
 DISCORD_WEBHOOK = settings.get("DISCORD_WEBHOOK", "")
 DISCORD_PROXY = settings.get("DISCORD_PROXY", "")
+TARGET_CMD = settings.get("TARGET_CMD", "")
 AUTHORIZED_USERS = set()
+
 
 if MEMBER_IDS_STR:
     for x in MEMBER_IDS_STR.split(","):
@@ -102,6 +118,8 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # Win32 HWND / Console Title Utility Functions
 # ----------------------------------------------------
 def find_console_hwnd(keyword):
+    if not IS_WINDOWS:
+        return None
     hwnd_found = None
     keyword_lower = keyword.lower()
     
@@ -124,6 +142,8 @@ def find_console_hwnd(keyword):
     return hwnd_found
 
 def get_window_text(hwnd):
+    if not IS_WINDOWS or not hwnd:
+        return ""
     try:
         buf = ctypes.create_unicode_buffer(1024)
         ctypes.windll.user32.GetWindowTextW(hwnd, buf, 1024)
@@ -132,12 +152,15 @@ def get_window_text(hwnd):
         return ""
 
 def get_console_title():
+    if not IS_WINDOWS:
+        return ""
     try:
         buf = ctypes.create_unicode_buffer(1024)
         ctypes.windll.kernel32.GetConsoleTitleW(buf, 1024)
         return buf.value.strip()
     except Exception:
         return ""
+
 
 # ----------------------------------------------------
 # 2. Keyboards (ReplyMarkup)
@@ -198,9 +221,11 @@ class GetVoidsSession:
                 bot.send_message(self.chat_id, f"{TOOL_NAME} is already running!")
                 return
             
-            # Setup path to EXE
+            # Setup path to GetVoids.exe
             script_dir = SCRIPT_DIR
             exe_path = os.path.join(script_dir, "GetVoids.exe")
+            if not os.path.exists(exe_path):
+                exe_path = os.path.join(script_dir, "GetVoids")
             
             if not os.path.exists(exe_path):
                 bot.send_message(self.chat_id, f"Error: GetVoids.exe not found at path: {exe_path}")
@@ -208,27 +233,34 @@ class GetVoidsSession:
                 
             bot.send_message(self.chat_id, f"Starting {TOOL_NAME}...", reply_markup=get_main_keyboard())
             
-            # Start process with environment variables to disable stdout buffering
-            # Spawn in a CREATE_NEW_CONSOLE window as requested
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             
+            popen_kwargs = {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "bufsize": 0,
+                "universal_newlines": True,
+                "env": env
+            }
+            
+            if IS_WINDOWS and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+            
             try:
-                self.proc = subprocess.Popen(
-                    [exe_path],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=0,
-                    universal_newlines=True,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE,
-                    env=env
-                )
+                if not IS_WINDOWS and shutil.which("wine"):
+                    self.proc = subprocess.Popen(["wine", exe_path], **popen_kwargs)
+                else:
+                    self.proc = subprocess.Popen([exe_path], **popen_kwargs)
             except Exception as e:
                 bot.send_message(self.chat_id, f"Failed to start: {e}")
                 self.proc = None
                 return
+
+
+
             
             self.state = "STARTING"
             self.stop_sender = False
@@ -267,12 +299,16 @@ class GetVoidsSession:
                 
             bot.send_message(self.chat_id, f"Stopping {TOOL_NAME}...")
             
-            # Terminate process using taskkill on Windows to ensure the entire tree (and window) is terminated
+            # Terminate process
             if self.proc.poll() is None:
                 try:
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if IS_WINDOWS:
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        self.proc.kill()
                 except Exception as e:
-                    print(f"Error terminating via taskkill: {e}")
+                    print(f"Error terminating process: {e}")
+
             
             # Wait for it
             self.proc.wait()
@@ -387,14 +423,21 @@ class GetVoidsSession:
                         line_clean = ansi_escape.sub('', line_raw).strip()
                         # Clean up trailing colons or empty characters to avoid ":" spam
                         if line_clean and line_clean != ":":
-                            self.send_queue.put(line_clean)
+                            if "Voids:" in line_clean:
+                                self.send_discord_counter(line_clean)
+                            else:
+                                self.send_queue.put(line_clean)
                         buf = ""
                     elif len(buf) > 400:
                         # Prevent infinite buffer if no newlines are printed
                         line_clean = ansi_escape.sub('', buf).strip()
                         if line_clean and line_clean != ":":
-                            self.send_queue.put(line_clean)
+                            if "Voids:" in line_clean:
+                                self.send_discord_counter(line_clean)
+                            else:
+                                self.send_queue.put(line_clean)
                         buf = ""
+
                         
             except Exception as e:
                 print(f"Stdout reader error: {e}")
