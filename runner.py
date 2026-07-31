@@ -232,9 +232,10 @@ class GetVoidsSession:
                 return
                 
             bot.send_message(self.chat_id, f"Starting {TOOL_NAME}...", reply_markup=get_main_keyboard())
-            
+                        # Start process with environment variables to disable stdout buffering & Wine debug noise
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
+            env["WINEDEBUG"] = "-all"
             
             popen_kwargs = {
                 "stdin": subprocess.PIPE,
@@ -251,13 +252,17 @@ class GetVoidsSession:
             
             try:
                 if not IS_WINDOWS and shutil.which("wine"):
-                    self.proc = subprocess.Popen(["wine", exe_path], **popen_kwargs)
+                    wine_cmd = ["wine", exe_path]
+                    if shutil.which("xvfb-run"):
+                        wine_cmd = ["xvfb-run", "-a"] + wine_cmd
+                    self.proc = subprocess.Popen(wine_cmd, **popen_kwargs)
                 else:
                     self.proc = subprocess.Popen([exe_path], **popen_kwargs)
             except Exception as e:
                 bot.send_message(self.chat_id, f"Failed to start: {e}")
                 self.proc = None
                 return
+
 
 
 
@@ -423,6 +428,10 @@ class GetVoidsSession:
                         line_clean = ansi_escape.sub('', line_raw).strip()
                         # Clean up trailing colons or empty characters to avoid ":" spam
                         if line_clean and line_clean != ":":
+                            # Filter out Wine debug / setup messages
+                            if any(x in line_clean for x in ["err:winediag:", "err:ole:", "wine:", "wine32", "fixme:"]):
+                                buf = ""
+                                continue
                             if "Voids:" in line_clean:
                                 self.send_discord_counter(line_clean)
                             else:
@@ -432,11 +441,15 @@ class GetVoidsSession:
                         # Prevent infinite buffer if no newlines are printed
                         line_clean = ansi_escape.sub('', buf).strip()
                         if line_clean and line_clean != ":":
+                            if any(x in line_clean for x in ["err:winediag:", "err:ole:", "wine:", "wine32", "fixme:"]):
+                                buf = ""
+                                continue
                             if "Voids:" in line_clean:
                                 self.send_discord_counter(line_clean)
                             else:
                                 self.send_queue.put(line_clean)
                         buf = ""
+
 
                         
             except Exception as e:
