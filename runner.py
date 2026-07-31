@@ -411,14 +411,18 @@ class GetVoidsSession:
             self.length_event.clear()
             self.threads_event.clear()
 
-            # Start stdout reader thread if subprocess running
+            # Start stdout reader thread if subprocess running, else prompt user for length directly
             if self.proc:
                 self.reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
                 self.reader_thread.start()
+            else:
+                self.state = "WAITING_FOR_LENGTH"
+                bot.send_message(self.chat_id, "Enter Username Length :")
 
             # Start message batch sender thread
             self.sender_thread = threading.Thread(target=self._batch_sender, daemon=True)
             self.sender_thread.start()
+
 
 
     def set_length(self, val):
@@ -803,6 +807,9 @@ def handle_all_messages(message):
             active_sessions.pop(chat_id, None)
         else:
             session.set_length(text)
+            if not session.proc:
+                session.state = "WAITING_FOR_THREADS"
+                bot.send_message(chat_id, "Enter Number of Threads :")
         return
 
     # ----------------------------------------------------
@@ -814,6 +821,29 @@ def handle_all_messages(message):
             active_sessions.pop(chat_id, None)
         else:
             session.set_threads(text)
+            if not session.proc:
+                try:
+                    l_val = int(session.length_input.strip())
+                    t_val = int(session.threads_input.strip())
+                except Exception:
+                    l_val = 4
+                    t_val = 10
+                session.engine = GetVoidsEngine(
+                    length=l_val,
+                    threads_count=t_val,
+                    output_file=OUTPUT_FILE,
+                    proxies_file=PROXIES_FILE,
+                    session_ref=session
+                )
+                session.engine.start()
+                session.state = "RUNNING"
+                bot.send_message(
+                    chat_id,
+                    f"*{TOOL_NAME}* is now running...\nLive counters are being sent to Discord.",
+                    parse_mode="Markdown"
+                )
+                session.monitor_thread = threading.Thread(target=session._monitor_title, daemon=True)
+                session.monitor_thread.start()
         return
 
     # ----------------------------------------------------
@@ -846,12 +876,13 @@ def handle_all_messages(message):
     # Main Menu Actions
     # ----------------------------------------------------
     if text == "Start":
-        if session and session.proc is not None:
+        if session and (session.proc is not None or (session.engine and session.engine.running)):
             bot.send_message(chat_id, f"{TOOL_NAME} is already running!")
         else:
             session = GetVoidsSession(chat_id)
             active_sessions[chat_id] = session
             session.start()
+
             
     elif text == "Stop":
         if session:
