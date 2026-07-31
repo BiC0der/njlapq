@@ -278,12 +278,11 @@ class GetVoidsEngine:
                     headers=headers,
                     data=data,
                     proxies=proxies_dict,
-                    timeout=8
+                    timeout=3
                 )
                 
-                with self.lock:
-                    self.req_count += 1
-                    
+                self.req_count += 1
+                
                 if resp.status_code == 200:
                     try:
                         res_json = resp.json()
@@ -291,36 +290,27 @@ class GetVoidsEngine:
                         
                         # 1. Banned / Fully Available account -> Voids.txt (Real Void)
                         if res_json.get("available") is True:
-                            with self.lock:
-                                self.void_count += 1
-                                with open(self.output_file, "a", encoding="utf-8") as f:
-                                    f.write(f"{username}\n")
+                            self.void_count += 1
+                            with open(self.output_file, "a", encoding="utf-8") as f:
+                                f.write(f"{username}\n")
                             self.session_ref.send_queue.put(f"[+] Void : @{username}")
                             
                         # 2. Active / Taken by active account -> voids_Live.txt (Void Live)
                         elif err_type == "username_held_by_others":
-                            with self.lock:
-                                with open(os.path.join(SCRIPT_DIR, "voids_Live.txt"), "a", encoding="utf-8") as f:
-                                    f.write(f"{username}\n")
-                                    
+                            with open(os.path.join(SCRIPT_DIR, "voids_Live.txt"), "a", encoding="utf-8") as f:
+                                f.write(f"{username}\n")
+                                
                         elif "Please wait" in resp.text or err_type == "rate_limit":
-                            with self.lock:
-                                self.ratelimit_count += 1
+                            self.ratelimit_count += 1
                     except Exception:
                         pass
                 elif resp.status_code == 429 or "Please wait" in resp.text:
-                    with self.lock:
-                        self.ratelimit_count += 1
+                    self.ratelimit_count += 1
                 else:
-                    with self.lock:
-                        self.error_count += 1
-
+                    self.error_count += 1
 
             except Exception:
-                with self.lock:
-                    self.error_count += 1
-                    
-            time.sleep(0.02)
+                self.error_count += 1
 
     def get_counter_title(self):
         now = time.time()
@@ -340,13 +330,21 @@ class GetVoidsEngine:
             self.running = False
             return
         self.running = True
-        for _ in range(self.threads_count):
-            t = threading.Thread(target=self.worker, daemon=True)
-            t.start()
-            self.threads.append(t)
+        
+        def launcher():
+            for _ in range(self.threads_count):
+                if not self.running:
+                    break
+                t = threading.Thread(target=self.worker, daemon=True)
+                t.start()
+                self.threads.append(t)
+                
+        threading.Thread(target=launcher, daemon=True).start()
 
     def stop(self):
         self.running = False
+
+
 
 
 # ----------------------------------------------------
