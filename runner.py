@@ -287,23 +287,46 @@ class GetVoidsEngine:
                     try:
                         res_json = resp.json()
                         err_type = res_json.get("error_type", "")
+                        is_avail = res_json.get("available", False)
                         
-                        # 1. Banned / Fully Available account -> Voids.txt (Real Void)
-                        if res_json.get("available") is True:
+                        # 1. Unclaimed / Available username -> Voids.txt
+                        if is_avail is True:
                             self.void_count += 1
                             with open(self.output_file, "a", encoding="utf-8") as f:
                                 f.write(f"{username}\n")
                             self.session_ref.send_queue.put(f"[+] Void : @{username}")
                             
-                        # 2. Active / Taken by active account -> voids_Live.txt (Void Live)
-                        elif err_type == "username_held_by_others":
-                            with open(os.path.join(SCRIPT_DIR, "voids_Live.txt"), "a", encoding="utf-8") as f:
-                                f.write(f"{username}\n")
+                        # 2. Taken username -> Check if Banned/Deleted (404 -> Voids.txt) or Active (200 -> voids_Live.txt)
+                        elif is_avail is False or err_type in ("username_is_taken", "username_held_by_others"):
+                            try:
+                                prof_headers = {
+                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+                                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                                }
+                                prof_res = session.get(
+                                    f"https://www.instagram.com/{username}/",
+                                    headers=prof_headers,
+                                    proxies=proxies_dict,
+                                    timeout=3
+                                )
+                                if prof_res.status_code == 404 or "isn't available" in prof_res.text:
+                                    # Banned / Deleted Account -> REAL VOID!
+                                    self.void_count += 1
+                                    with open(self.output_file, "a", encoding="utf-8") as f:
+                                        f.write(f"{username}\n")
+                                    self.session_ref.send_queue.put(f"[+] Void : @{username}")
+                                elif prof_res.status_code == 200:
+                                    # Active account -> voids_Live.txt
+                                    with open(os.path.join(SCRIPT_DIR, "voids_Live.txt"), "a", encoding="utf-8") as f:
+                                        f.write(f"{username}\n")
+                            except Exception:
+                                pass
                                 
                         elif "Please wait" in resp.text or err_type == "rate_limit":
                             self.ratelimit_count += 1
                     except Exception:
                         pass
+
                 elif resp.status_code == 429 or "Please wait" in resp.text:
                     self.ratelimit_count += 1
                 else:
